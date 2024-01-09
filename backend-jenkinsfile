@@ -1,0 +1,43 @@
+pipeline {
+  agent any
+  environment {
+        AWS_ACCOUNT = "159549388366"
+        MODULE = "mp-pos-service"
+        ENV = "dev"
+        CLUSTER= "MP-DEV"
+        SPRING_PROFILES_ACTIVE = "dev"
+        NAMESPACE="dev"
+        REGION="us-east-1"
+    }
+  stages {
+    stage('Build docker image') {
+      steps {
+        sh('aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin ${AWS_ACCOUNT}.dkr.ecr.us-east-1.amazonaws.com')
+        sh('docker build --build-arg SPRING_PROFILES_ACTIVE=${SPRING_PROFILES_ACTIVE} -t ${AWS_ACCOUNT}.dkr.ecr.us-east-1.amazonaws.com/${MODULE}-${ENV}:${BUILD_NUMBER} .')
+      }
+    }
+    stage('push docker image') {
+      steps {
+        sh('aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin ${AWS_ACCOUNT}.dkr.ecr.us-east-1.amazonaws.com')
+        // sh('docker push ${AWS_ACCOUNT}.dkr.ecr.us-east-1.amazonaws.com/${MODULE}-${ENV}:${BUILD_NUMBER}')
+        sh('docker push ${AWS_ACCOUNT}.dkr.ecr.us-east-1.amazonaws.com/${MODULE}-${ENV}:${BUILD_NUMBER}')
+      }
+    }
+    stage('helm update') {
+      steps {
+       sh('aws s3 cp s3://dev-mp-helm-charts ${MODULE} --recursive')
+        sh('aws eks --region ${REGION} update-kubeconfig --name ${CLUSTER}')
+        sh("sed -i -e 's#latest#${BUILD_NUMBER}#' helm/${ENV}.values.yaml ")
+        sh('helm upgrade --install --debug -f helm/${ENV}.values.yaml ${ENV}-${MODULE} ./${MODULE} -n ${NAMESPACE}')
+      }
+    }
+  }
+  post {
+    always {
+      //Cleanup workspace   
+      //docker system prune -af
+      cleanWs()
+      sh('docker system prune -af')
+    }
+  }
+}
