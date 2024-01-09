@@ -1,0 +1,65 @@
+pipeline {
+  agent any
+  environment {
+        AWS_ACCOUNT = "159549388366"
+        MODULE = "mp-storefront-panel"
+        ENV = "dev"
+        CLUSTER= "MP-DEV"
+        // SPRING_PROFILES_ACTIVE = "dev"
+        NAMESPACE="dev"
+        REGION="us-east-1"
+        NEXT_PUBLIC_API_BASE_URL="https://api.dev.mosaic.green/"
+        NEXT_PUBLIC_APP_BROWSER_BASE_URL="https://storefront.dev.mosaic.green/"
+        NEXT_PUBLIC_PAYMENT_APP_URL="https://payment.dev.mosaic.green"
+        NEXT_PUBLIC_DEFAULT_SESSION_PERIOD=1
+        NEXT_PUBLIC_MAPBOX_TOKEN="pk.eyJ1IjoiYWV0LWthdmluZHUiLCJhIjoiY2wxMGF4bWc1MW5ydTNmcDVncGwycjFhcyJ9.08aPcR41JS13NmAptNW37Q"
+        NEXT_PUBLIC_APP_ASSET_URL="https://merchant.dev.mosaic.green"
+        NEXT_PUBLIC_GOOGLE_ANALYTICS="GTM-M4L7Q6D"
+        NEXT_PUBLIC_LOG_ROCKET_APP_ID="w7etgr/mosaic-qa"
+        NEW_RELIC_FILE_PATH="./configs/non-prod"
+        DOCKER_BUILDKIT=1
+    }
+  stages {
+    stage('Install node modules') {
+      steps {
+        sh('aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin ${AWS_ACCOUNT}.dkr.ecr.us-east-1.amazonaws.com')
+        sh('docker build --target deps --cache-from ${AWS_ACCOUNT}.dkr.ecr.us-east-1.amazonaws.com/${MODULE}-${ENV}:deps --build-arg BUILDKIT_INLINE_CACHE=1 --tag ${AWS_ACCOUNT}.dkr.ecr.us-east-1.amazonaws.com/${MODULE}-${ENV}:deps .') 
+      }
+    }
+    stage('cache node modules image') {
+      steps {
+        sh('aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin ${AWS_ACCOUNT}.dkr.ecr.us-east-1.amazonaws.com')
+        sh('docker push ${AWS_ACCOUNT}.dkr.ecr.us-east-1.amazonaws.com/${MODULE}-${ENV}:deps')
+      }
+    }
+    stage('Build docker image') {
+      steps {
+        sh('aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin ${AWS_ACCOUNT}.dkr.ecr.us-east-1.amazonaws.com')
+        sh('docker build --cache-from ${AWS_ACCOUNT}.dkr.ecr.us-east-1.amazonaws.com/${MODULE}-${ENV}:deps -t ${AWS_ACCOUNT}.dkr.ecr.us-east-1.amazonaws.com/${MODULE}-${ENV}:${BUILD_NUMBER} --build-arg NEXT_PUBLIC_APP_BROWSER_BASE_URL=${NEXT_PUBLIC_APP_BROWSER_BASE_URL} --build-arg NEXT_PUBLIC_API_BASE_URL=${NEXT_PUBLIC_API_BASE_URL} --build-arg NEXT_PUBLIC_PAYMENT_APP_URL=${NEXT_PUBLIC_PAYMENT_APP_URL} --build-arg NEXT_PUBLIC_DEFAULT_SESSION_PERIOD=${NEXT_PUBLIC_DEFAULT_SESSION_PERIOD} --build-arg NEXT_PUBLIC_MAPBOX_TOKEN=${NEXT_PUBLIC_MAPBOX_TOKEN} --build-arg NEXT_PUBLIC_APP_ASSET_URL=${NEXT_PUBLIC_APP_ASSET_URL} --build-arg NEXT_PUBLIC_GOOGLE_ANALYTICS=${NEXT_PUBLIC_GOOGLE_ANALYTICS} --build-arg NEXT_PUBLIC_LOG_ROCKET_APP_ID=${NEXT_PUBLIC_LOG_ROCKET_APP_ID} --build-arg NEW_RELIC_FILE_PATH=${NEW_RELIC_FILE_PATH} .') 
+      }
+    }
+    stage('push docker image') {
+      steps {
+        sh('aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin ${AWS_ACCOUNT}.dkr.ecr.us-east-1.amazonaws.com')
+        // sh('docker push ${AWS_ACCOUNT}.dkr.ecr.us-east-1.amazonaws.com/${MODULE}-${ENV}:${BUILD_NUMBER}')
+        sh('docker push ${AWS_ACCOUNT}.dkr.ecr.us-east-1.amazonaws.com/${MODULE}-${ENV}:${BUILD_NUMBER}')
+      }
+    }
+    stage('helm update') {
+      steps {
+       sh('aws s3 cp s3://dev-mp-helm-charts-frontend-multihost ${MODULE} --recursive')
+        sh('aws eks --region ${REGION} update-kubeconfig --name ${CLUSTER}')
+        sh("sed -i -e 's#latest#${BUILD_NUMBER}#' helm/${ENV}.values.yaml ")
+        sh('helm upgrade --install --debug -f helm/${ENV}.values.yaml ${ENV}-${MODULE} ./${MODULE} -n ${NAMESPACE}')
+      }
+    }
+  }
+  post {
+    always {
+      //Cleanup workspace   
+      //docker system prune -af
+      //cleanWs()
+      sh('docker system prune -af')
+    }
+  }
+}
